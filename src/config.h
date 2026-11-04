@@ -20,7 +20,7 @@
 
 // -- File Server (AP mode) --
 #define FILE_SERVER_PORT    80
-#define FILE_CHUNK_BYTES    1460  // ESP8266 TCP MSS
+#define FILE_CHUNK_BYTES    2048  // /download: bytes read per SD bus session (4 sectors)
 
 // -- Cloud Push (STA mode) --
 #define PUSH_CHUNK_SIZE     4096  // Max upload chunk (RAM constrained)
@@ -54,5 +54,5 @@
 
 // -- Firmware --
 #ifndef APP_VERSION
-#define APP_VERSION         "2026.1.1"
+#define APP_VERSION         "2026.1.1-lw2"
 #endif

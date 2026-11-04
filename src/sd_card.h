@@ -6,7 +6,8 @@
 
 void sd_card_init();
 bool sd_card_mount();
-void sd_card_unmount();
+// Releases the bus. Returns the SdFat card error code of this session (0 = ok).
+uint8_t sd_card_unmount();
 bool sd_card_is_mounted();
 SdFat &sd_card_get();
 

@@ -1,5 +1,27 @@
 # Changelog
 
+## 2026.1.1-lw2 (2026-11-04)
+
+Fork for the Löwenstein prisma SMART max (folder layout `0040439131/YYYYMMDD/0001`, `Dcm`, `log`). Tested on a FYSETC SD-WiFi v2.1 inside the CPAP.
+
+### Fixed
+
+- `/dir`: listing the root directory (`dir=A:`, `A:/`, `A:\`, `A:%5C`) returned "directory not found"; any folder can now be browsed, links are percent-encoded and HTML-escaped, `..` is rejected
+- `/dir`: the 200 header is sent only after the first 2 KB of the listing was read; a card error at the very start is retried once and otherwise answered with a 503 (busy page reloads itself after 5 s) instead of an empty 200 page
+- `/download`: the first chunk is read before the header goes out, so an error at the start becomes a 503 instead of a short 200
+- Incomplete listings/downloads are cut off instead of looking complete
+
+### Changed
+
+- SD bus is held only while reading (2 KB per session for downloads) and released before every WiFi write; a new session needs CS_SENSE high and 3 s without CPAP activity
+- `USE_SD_CRC` removed (CMD59 would change card state shared with the CPAP) and guarded with `#error`; no automatic card re-init (CMD0) after errors
+- Landing page links the SD root instead of `DATALOG`
+- `/api/status` reports `sd_errors` and `last_error`
+
+### Added
+
+- `/update`: firmware update over WiFi (basic auth user `admin`, CSRF check). Enabled only when a password is set in the untracked `platformio_local.ini` (see `platformio_local.ini.example`) or `OTA_PASSWORD`; the password is not committed
+
 ## 2026.1.1 (2026-05-22)
 
 Rebrand and cleanup release. No behavior change for File Server users.

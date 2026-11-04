@@ -1,0 +1,6 @@
+; Copy to platformio_local.ini (git-ignored) and set YOUR OWN password
+; (8-64 chars, no space/quotes/backslash/$). Empty = /update disabled.
+; Placeholders like "change-me-please" are rejected by scripts/ota_password.py.
+; Alternatively: OTA_PASSWORD='...' pio run
+[ota]
+password =

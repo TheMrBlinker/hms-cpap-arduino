@@ -3,3 +3,9 @@
 *.o
 *.bin
 *.elf
+
+# local secrets (OTA password)
+platformio_local*.ini
+
+# generated compile DB (contains build flags)
+compile_commands.json
