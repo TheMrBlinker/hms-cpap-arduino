@@ -5,7 +5,13 @@
 // Handles SPI bus arbitration with external master (CPAP)
 
 void sd_card_init();
-bool sd_card_mount();
+// allow_init=false: never (re-)initialise the card (used by wait loops).
+bool sd_card_mount(bool allow_init = true);
+bool sd_card_is_initialized();
+// ms until the next card init is allowed (0 = now). Only after an attempt.
+uint32_t sd_card_init_wait_ms();
+uint16_t sd_card_init_count();
+uint16_t sd_card_init_fail_count();
 // Releases the bus. Returns the SdFat card error code of this session (0 = ok).
 uint8_t sd_card_unmount();
 bool sd_card_is_mounted();

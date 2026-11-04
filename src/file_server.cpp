@@ -94,7 +94,16 @@ static bool canonical_path(String &p) {
 // ---------------------------------------------------------------------------
 static bool mount_or_respond(const char *what, const String &path) {
     if (sd_card_mount()) return true;
-    if (!sd_card_bus_available()) {
+    uint32_t wait_ms = sd_card_is_initialized() ? 0 : sd_card_init_wait_ms();
+    if (wait_ms) {
+        // An init failed recently: no new attempt before the pause is over.
+        char ra[12];
+        snprintf(ra, sizeof(ra), "%lu", (unsigned long)(wait_ms / 1000 + 1));
+        note_error(what, path, "sd_not_ready (init pause)", 0);
+        s_server->sendHeader(F("Retry-After"), ra);
+        s_server->send_P(503, PSTR("text/plain"),
+                         PSTR("sd_not_ready: card init failed, next attempt after Retry-After seconds"));
+    } else if (!sd_card_bus_available()) {
         note_error(what, path, "sd_busy", 0);
         s_server->sendHeader(F("Retry-After"), F("3"));
         s_server->send_P(503, PSTR("text/plain"), PSTR("sd_busy: CPAP is using the card, retry"));
@@ -109,7 +118,8 @@ static bool mount_or_respond(const char *what, const String &path) {
 // then start a new bus session. False on timeout or client disconnect.
 static bool remount_wait(uint32_t max_ms) {
     uint32_t t0 = millis();
-    while (!sd_card_mount()) {
+    while (!sd_card_mount(false)) {  // never (re-)initialise from here
+        if (!sd_card_is_initialized()) return false;
         if (!s_server->client().connected()) return false;
         if ((uint32_t)(millis() - t0) >= max_ms) return false;
         delay(5);
@@ -564,12 +574,13 @@ static void handle_status() {
              "\"uptime\":\"%dh%02dm%02ds\","
              "\"fw_version\":\"%s\","
              "\"sd_errors\":%u,"
+             "\"sd_inits\":%u,\"sd_init_fails\":%u,"
              "\"last_error\":\"%s\"}",
              WiFi.isConnected() ? "true" : "false",
              ESP.getFreeHeap(),
              hrs, mins, secs,
              APP_VERSION,
-             s_err_count, s_last_err);
+             s_err_count, sd_card_init_count(), sd_card_init_fail_count(), s_last_err);
 
     s_server->send(200, "application/json", buf);
 }

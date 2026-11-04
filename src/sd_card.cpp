@@ -13,8 +13,11 @@
 //  - no CMD59 (USE_SD_CRC stays 0): CRC checking would stay enabled inside the
 //    card and make it reject the CPAP's commands/blocks if its driver sends
 //    dummy CRCs.
-//  - CMD0 + init only once per boot (stock behaviour). An automatic re-init
-//    after I/O errors is compiled out unless SD_REINIT_ON_ERROR=1.
+//  - CMD0 + init once per boot (stock behaviour). With SD_REINIT_ON_ERROR=1
+//    the card is re-initialised only on a user request, after 3 failed read
+//    sessions in a row, at least 5 min after the previous init ATTEMPT (failed
+//    or not) and after 10 s without CPAP bus activity. A failed init is retried
+//    under the same rules. Waits/retries inside one request never re-init.
 
 #if defined(USE_SD_CRC) && USE_SD_CRC
 #error "USE_SD_CRC must stay 0: CMD59 changes card state shared with the CPAP"
@@ -36,12 +39,18 @@ static volatile uint32_t s_cs_edges = 0;
 
 #define SPI_BLOCKOUT_MS  3000
 
-#if SD_REINIT_ON_ERROR
-#define REINIT_AFTER_ERR_SESSIONS  3
+// Pause between two card inits (any attempt, failed or not) and the CPAP
+// quiet time required for every init except the first one after boot.
 #define REINIT_MIN_INTERVAL_MS     (5UL * 60UL * 1000UL)
 #define REINIT_QUIET_MS            10000
+static bool     s_init_attempted = false;  // any sd.begin() since boot
+static uint32_t s_last_init_ms = 0;        // time of the last sd.begin() attempt
+static uint16_t s_init_count = 0;          // successful inits since boot
+static uint16_t s_init_fail_count = 0;     // failed inits since boot
+
+#if SD_REINIT_ON_ERROR
+#define REINIT_AFTER_ERR_SESSIONS  3
 static uint8_t  s_err_sessions = 0;
-static uint32_t s_last_init_ms = 0;
 static bool     s_reinit_pending = false;
 #endif
 
@@ -139,50 +148,79 @@ bool sd_card_bus_available() {
 // at the start of every session; sd_card_unmount() then reports whether THIS
 // session hit a card-level error. After an error we do NOT re-initialise the
 // card (that would send CMD0 right after CPAP activity); the next session just
-// retries the read. Optional, off by default: SD_REINIT_ON_ERROR=1.
-bool sd_card_mount() {
+// retries the read. With SD_REINIT_ON_ERROR=1 see the rules at the top.
+// One card init (CMD0 ...) with the bus already claimed by the caller.
+// Every attempt, failed or not, restarts the REINIT_MIN_INTERVAL_MS pause.
+static bool init_card(bool retry_once) {
+    unsigned long t0 = millis();
+    s_init_attempted = true;
+    bool ok = sd.begin(SdSpiConfig(SD_CS_PIN, SHARED_SPI, SD_SPI_SPEED));
+    if (!ok && retry_once) {
+        Serial.printf("[sd] Card init failed (err=0x%02X data=0x%02X), retry\n",
+                      sd.sdErrorCode(), (unsigned)sd.sdErrorData());
+        sd.card()->syncDevice();
+        release_bus();          // never wait while holding the bus
+        delay(100);
+        if (claim_bus(SPI_BLOCKOUT_MS)) {
+            ok = sd.begin(SdSpiConfig(SD_CS_PIN, SHARED_SPI, SD_SPI_SPEED));
+        } else {                // CPAP became active: give up, bus untouched
+            s_last_init_ms = millis();
+            s_init_fail_count++;
+            return false;
+        }
+    }
+    s_last_init_ms = millis();
+    if (!ok) {
+        Serial.printf("[sd] Mount failed (err=0x%02X data=0x%02X)\n",
+                      sd.sdErrorCode(), (unsigned)sd.sdErrorData());
+        sd.card()->syncDevice();
+        release_bus();
+        s_init_fail_count++;
+        return false;
+    }
+    s_card_initialized = true;
+#if SD_REINIT_ON_ERROR
+    s_err_sessions = 0;
+    s_reinit_pending = false;
+#endif
+    s_init_count++;
+    Serial.printf("[sd] Card init: %lums\n", millis() - t0);
+    s_mounted = true;
+    return true;
+}
+
+uint32_t sd_card_init_wait_ms() {
+    if (!s_init_attempted) return 0;
+    uint32_t since = (uint32_t)(millis() - s_last_init_ms);
+    return since >= REINIT_MIN_INTERVAL_MS ? 0 : REINIT_MIN_INTERVAL_MS - since;
+}
+
+bool sd_card_mount(bool allow_init) {
     if (s_mounted) return true;
 
     if (!s_card_initialized) {
-        // First mount after boot: full init (CMD0 ...), once.
-        if (!claim_bus(SPI_BLOCKOUT_MS)) return false;
-        unsigned long t0 = millis();
-        bool ok = sd.begin(SdSpiConfig(SD_CS_PIN, SHARED_SPI, SD_SPI_SPEED));
-        if (!ok) {
-            Serial.printf("[sd] Card init failed (err=0x%02X data=0x%02X), retry\n",
-                          sd.sdErrorCode(), (unsigned)sd.sdErrorData());
-            sd.card()->syncDevice();
-            release_bus();          // never wait while holding the bus
-            delay(100);
-            if (!claim_bus(SPI_BLOCKOUT_MS)) return false;  // CPAP became active
-            ok = sd.begin(SdSpiConfig(SD_CS_PIN, SHARED_SPI, SD_SPI_SPEED));
+        if (!allow_init) return false;  // never init from a wait loop
+        if (!s_init_attempted) {
+            // First init after boot (stock behaviour): 3 s quiet, one retry.
+            if (!claim_bus(SPI_BLOCKOUT_MS)) return false;
+            return init_card(true);
         }
-        if (!ok) {
-            Serial.printf("[sd] Mount failed (err=0x%02X data=0x%02X)\n",
-                          sd.sdErrorCode(), (unsigned)sd.sdErrorData());
-            sd.card()->syncDevice();
-            release_bus();
-            return false;
-        }
-        s_card_initialized = true;
-#if SD_REINIT_ON_ERROR
-        s_last_init_ms = millis();
-        s_err_sessions = 0;
-        s_reinit_pending = false;
-#endif
-        Serial.printf("[sd] Card init: %lums\n", millis() - t0);
-        s_mounted = true;
-        return true;
+        // An earlier init failed: same rules as a re-init.
+        if (sd_card_init_wait_ms() > 0) return false;
+        if (!claim_bus(REINIT_QUIET_MS)) return false;
+        Serial.println(F("[sd] Retrying card init after a failed init"));
+        return init_card(false);
     }
 
 #if SD_REINIT_ON_ERROR
-    if (s_reinit_pending && bus_idle(REINIT_QUIET_MS)) {
-        // Only after repeated failed sessions, rate-limited, after a long
-        // quiet period. Falls back to a normal remount if not quiet enough.
-        s_card_initialized = false;
-        s_reinit_pending = false;
-        Serial.println(F("[sd] Re-initialising card after repeated I/O errors"));
-        return sd_card_mount();
+    if (allow_init && s_reinit_pending && sd_card_init_wait_ms() == 0) {
+        if (claim_bus(REINIT_QUIET_MS)) {
+            s_card_initialized = false;
+            s_reinit_pending = false;
+            Serial.println(F("[sd] Re-initialising card after repeated I/O errors"));
+            return init_card(false);
+        }
+        // CPAP not quiet for 10 s: plain remount below, re-init stays pending.
     }
 #endif
 
@@ -194,6 +232,10 @@ bool sd_card_mount() {
     s_mounted = true;
     return true;
 }
+
+bool sd_card_is_initialized() { return s_card_initialized; }
+uint16_t sd_card_init_count() { return s_init_count; }
+uint16_t sd_card_init_fail_count() { return s_init_fail_count; }
 
 uint8_t sd_card_unmount() {
     if (!s_mounted) return 0;
@@ -209,9 +251,8 @@ uint8_t sd_card_unmount() {
 #if SD_REINIT_ON_ERROR
     if (err) {
         if (s_err_sessions < 255) s_err_sessions++;
-        if (s_err_sessions >= REINIT_AFTER_ERR_SESSIONS &&
-            (uint32_t)(millis() - s_last_init_ms) >= REINIT_MIN_INTERVAL_MS) {
-            s_reinit_pending = true;
+        if (s_err_sessions >= REINIT_AFTER_ERR_SESSIONS) {
+            s_reinit_pending = true;  // carried out by sd_card_mount() rules
         }
     } else {
         s_err_sessions = 0;

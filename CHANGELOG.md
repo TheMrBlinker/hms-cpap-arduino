@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026.1.1-lw3 (2026-11-04)
+
+### Fixed
+
+- After the CPAP had been in use, every read failed (`sdErr=0x0C`, CMD18) until the ESP was rebooted: the CPAP re-initialises the card for itself, so the card no longer answers our SPI reads
+
+### Changed
+
+- `SD_REINIT_ON_ERROR=1` is now enabled, with stricter rules: the card is re-initialised only at the start of a user request, after 3 failed read sessions in a row, at least 5 min after the previous init attempt and after 10 s without CPAP bus activity
+- A FAILED init is retried under the same rules (previously it was retried on every request after only 3 s of quiet); wait loops inside a request never (re-)initialise the card
+- During the pause after a failed init, requests get `503 sd_not_ready` with `Retry-After`
+- `/api/status` reports `sd_inits` and `sd_init_fails`
+
 ## 2026.1.1-lw2 (2026-11-04)
 
 Fork for the Löwenstein prisma SMART max (folder layout `0040439131/YYYYMMDD/0001`, `Dcm`, `log`). Tested on a FYSETC SD-WiFi v2.1 inside the CPAP.

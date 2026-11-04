@@ -54,5 +54,5 @@
 
 // -- Firmware --
 #ifndef APP_VERSION
-#define APP_VERSION         "2026.1.1-lw2"
+#define APP_VERSION         "2026.1.1-lw3"
 #endif
